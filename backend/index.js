@@ -4,89 +4,144 @@ const multer = require('multer');
 const path = require('path');
 const axios = require("axios");
 const cors = require("cors");
-// const mongoose = require("mongoose");
+const fetch = require('node-fetch');
+const fs = require('fs/promises');
+const cookieParser = require("cookie-parser");
+const {restrictToLoggedInUserOnly} = require("./middlewares/user")
+
+
+
+const session = require("express-session");
+
+
 const connectDB = require('./db');
 const users = require('./routes/users')
+const SignupRoutes = require('./routes/signup');
 const app = express();
 
-const upload = multer({dest: "uploads/"})
-
-
-// app.set("view engine" , "ejs");
-// app.set("views" , path.resolve("./views"));
+const upload = multer();
 
 
 const usersDetails = require('./routes/userDetailsRoutes');
 require("dotenv").config();
 
-app.use(cors());
-app.use(express.json());
-// app.use(express.urlencoded({extended : false}));
+app.use(
+  session({
+    secret: "mySecretKey", // should be a long random string in production
+    resave: false,         // don't save session if unmodified
+    saveUninitialized: false, // don't create session until something stored
+    cookie: {
+      maxAge: 1000 * 60 * 60, // 1 hour
+      httpOnly: true,
+      secure: false,          // set true if using HTTPS
+    },
+  })
+);
 
+
+app.use(cookieParser());
+
+app.use(express.json());
+
+
+const corsOptions = {
+    origin: 'http://localhost:5173', 
+    credentials: true, 
+};
+
+app.use(cors(corsOptions));
 
 
 const PORT = 5000;
-// const dbURI = process.env.MONGODB_URI;
+
 const DEEPGRAM_API_KEY = process.env.API_KEY;
 connectDB();
 
-// api/users
+
 app.use( '/api' ,  users);
 
 app.use('/info' ,  usersDetails );
 
+app.use('/entry'  , SignupRoutes);
 
 
-// Check MongoDB URI
-// if (!dbURI) {
-//   console.error("❌ MongoDB URI not found. Please set MONGODB_URI in your .env file.");
-//   process.exit(1); // stop app if DB not configured
-// }
-// --- Routes ---
 
+app.post('/synthesize', async (req, res) => {
+    try {
+        // 1. Get the text from the request body
+        const { text } = req.body;
+        if (!text) {
+            return res.status(400).json({ error: 'Request body must contain "text" to synthesize.' });
+        }
 
-app.get("/home", (req, res) => {
-  res.json("Hello from home page");
-});
+        // 2. Retrieve the API Key from environment variables
+       
+        if (!DEEPGRAM_API_KEY) {
+            console.error('DEEPGRAM_API_KEY is not set.');
+            return res.status(500).json({ error: 'Server configuration error: API key is missing.' });
+        }
+        
+        // 3. Prepare the request to Deepgram's API
+        
+        const url = 'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en';
+        const options = {
+            method: 'POST',
+            headers: {
+                'Authorization': `Token ${DEEPGRAM_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ text }),
+        };
+        
+        // 4. Make the API call
+        console.log('Sending request to Deepgram...');
+        const deepgramResponse = await fetch(url, options);
 
-app.get("/api/message", (req, res) => {
-  res.json({ message: "Hello from Express backend !" });
-});
+        if (!deepgramResponse.ok) {
+            const errorDetails = await deepgramResponse.text();
+            console.error(`Deepgram API Error: ${deepgramResponse.status}`, errorDetails);
+            return res.status(deepgramResponse.status).json({
+                error: 'Failed to synthesize speech.',
+                details: errorDetails,
+            });
+        }
+        
+        console.log('Successfully received audio data from Deepgram.');
+        
+        // 5. Get the audio data and save it to a file
+        const audioBuffer = await deepgramResponse.buffer();
 
-app.post("/api/data", (req, res) => {
-  const { name } = req.body;
-  res.json({ reply: `Hello, ${name}! Data received.` });
-});
+        const audioDir = path.join(__dirname, 'audio file');
+        const outputFileName = `speech_${Date.now()}.mp3`;
+        const outputPath = path.join(audioDir, outputFileName);
 
+        await fs.mkdir(audioDir, { recursive: true })
+        await fs.writeFile(outputPath, audioBuffer);
+        
+        console.log(`Audio file saved to: ${outputPath}`);
 
-app.get("/transcribe", async (req, res) => {
-  try {
-    if (!DEEPGRAM_API_KEY) {
-      return res.status(500).json({ error: "No Deepgram API key found" });
+        // 6. Send a success response back to the client
+        res.status(200).json({
+            message: 'Audio file created successfully.',
+            fileName: outputFileName,
+        });
+
+    } catch (error) {
+        console.error('An unexpected error occurred:', error);
+        res.status(500).json({ error: 'An internal server error occurred.' });
     }
-
-    const response = await axios.post(
-      "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true",
-      { url: "https://dpgr.am/spacewalk.wav" }, // audio file URL
-      {
-        headers: {
-          Authorization: `Token ${DEEPGRAM_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    res.json(response.data);
-  } catch (error) {
-    console.error("Error:", error.response?.data || error.message);
-    res.status(500).json({ error: "Transcription failed by Anish" });
-  }
 });
+
 
 
 
 
 app.post("/upload" , upload.single("profileImage") , (req,res)=>{
+  
+  const {name1 } = req.body;
+
+  console.log(name1);
+  console.log("multer done");
   console.log(req.body);
   console.log(req.file);
 
@@ -96,79 +151,7 @@ app.post("/upload" , upload.single("profileImage") , (req,res)=>{
 
 
 
-
-// const storage = multer.diskStorage({
-//   // `destination` specifies the folder where files will be stored.
-//   destination: (req, file, cb) => {
-//     cb(null, 'uploads/');
-//   },
-//   // `filename` determines the name of the file inside the `uploads/` folder.
-//   filename: (req, file, cb) => {
-//     // We create a unique filename to avoid overwriting files.
-//     // It combines the current timestamp with the original file extension.
-//     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-//     cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-//   },
-// });
-
-// // 2. Initialize Multer with the storage configuration
-// // You can also add other options here, like file filters or size limits.
-// const upload = multer({ storage: storage });
-
-
-// // --- API Route ---
-
-
-// app.post('/upload', upload.single('myFile'), (req, res) => {
-//   // `upload.single('myFile')` is the middleware.
-//   // 'myFile' is the field name that the client must use when sending the form data.
-
-//   // If the upload is successful, `req.file` will contain file information.
-//   // If there was an error (e.g., no file), Multer handles it, but we can add checks.
-//   if (!req.file) {
-//     return res.status(400).send({ message: 'Please upload a file.' });
-//   }
-
-//   // Send a success response with the file details
-//   res.status(200).send({
-//     message: 'File uploaded successfully! 🚀',
-//     file: req.file, // Contains details like filename, path, size, etc.
-//   });
-// });
-
-
-
-
-
-
-
-
-
-
-
-
-// app.listen(PORT, () => {
-//       console.log(`🚀 Backend Server running beautifully by Anish on http://localhost:${PORT} and ${dbURI} and ${DEEPGRAM_API_KEY} `);
-// });
-
-
-// --- DB connection & Server start ---
-
-
-
 app.listen(PORT, () => {
       console.log(`🚀 Backend Server running beautifully by Anish on http://localhost:${PORT}`);
     });
 
-
-// mongoose.connect(dbURI)
-//   .then(() => {
-//     console.log("✅ Successfully connected to MongoDB!");
-//     app.listen(PORT, () => {
-//       console.log(`🚀 Backend Server running beautifully by Anish on http://localhost:${PORT}`);
-//     });
-//   })
-//   .catch((err) => {
-//     console.error("❌ Failed to connect to MongoDB by anish", err);
-//     process.exit(1); // stop app if DB fails
-//   });

@@ -34,7 +34,7 @@ router.post('/users', async (req, res) => {
         res.status(200).json({
             success: true, user: newUser
         })
-    }
+    }   
     catch (err) {
         res.status(500).json({
             success: false,
